@@ -1,0 +1,87 @@
+{
+  "cooldownHours": 168,
+  "maxRepairsPerDay": 1,
+  "repair": {
+    "enabled": false,
+    "repository": "shane836/ingestion-monitor",
+    "ref": "main"
+  },
+  "projects": [
+    {
+      "id": "sf-events",
+      "repo": "shane836/sf-events-aggregator",
+      "ref": "main",
+      "http": [
+        {
+          "id": "events-api",
+          "url": "https://sf-events-aggregator-two.vercel.app/api/events?limit=5",
+          "jsonArrayPath": "events",
+          "minimumItems": 1,
+          "requiredFields": [
+            "id",
+            "title",
+            "venue.name"
+          ],
+          "futureField": "startTimeUtc"
+        }
+      ],
+      "browser": {
+        "url": "https://sf-events-aggregator-two.vercel.app",
+        "selectors": [
+          "[data-section=upcoming-feed]",
+          "[data-feed-row]"
+        ]
+      },
+      "github": {
+        "workflow": "ingest.yml",
+        "maxAgeHours": 36,
+        "maxRunHours": 1
+      },
+      "repair": {
+        "allowedPaths": [
+          "app/",
+          "lib/",
+          "ingest/",
+          "tests/",
+          "fixtures/"
+        ],
+        "install": "npm ci",
+        "validate": "npm test -- tests/lib tests/sources tests/ui && npm run typecheck && npm run lint && npm run build"
+      }
+    },
+    {
+      "id": "cre-radar",
+      "repo": "shane836/cre-radar",
+      "ref": "main",
+      "http": [
+        {
+          "id": "published-site",
+          "url": "https://radar.masonequitypartners.com",
+          "includesText": "SoCal CRE Events"
+        }
+      ],
+      "browser": {
+        "url": "https://radar.masonequitypartners.com",
+        "selectors": [
+          "h1",
+          ".sub"
+        ]
+      },
+      "heartbeat": {
+        "maxAgeHours": 36,
+        "tokenEnv": "CRE_HEARTBEAT_TOKEN"
+      },
+      "repair": {
+        "allowedPaths": [
+          "src/",
+          "tests/",
+          "fixtures/",
+          "sources.toml",
+          "scoring.toml"
+        ],
+        "install": "uv sync --locked",
+        "validate": "uv run pytest -q && uv run ruff check ."
+      }
+    }
+  ]
+}
