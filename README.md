@@ -31,6 +31,8 @@ the service or its repair workflow.
 CRE's heartbeat receiver is implemented, but its launchd wrapper is not yet wired
 to it. The example configuration intentionally reports that missing heartbeat.
 
+The activation checklist is [OPEN-ITEMS.md](OPEN-ITEMS.md).
+
 ## Run
 
 ```sh
@@ -105,8 +107,8 @@ optional free Checkly uptime monitor could be used later.
 
 ## Enable repair and review emails
 
-1. Publish this directory as its own private GitHub repository after reviewing
-   and approving its initial commit. No automatic commit is part of this service.
+1. **Completed:** source is published in the private `shane836/ingestion-monitor`
+   repository. No automatic commit is part of this service.
 2. Add GitHub secrets `OPENAI_API_KEY`, `RESEND_API_KEY`, and, for private target
    repositories, `MONITOR_GITHUB_TOKEN`. Add repository variables
    `MONITOR_EMAIL_TO` and `MONITOR_EMAIL_FROM`. The latter must be a verified
