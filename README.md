@@ -1,13 +1,10 @@
 # Data Pipeline Monitor
 
 A local monitoring and repair-review system for **data aggregation services**:
-applications that collect outside data, process it on a schedule, and publish it
+applications that collect data from internet websites in compliance with applicable Terms of Use, process it on a schedule, and publish it
 through an API or website.
 
-A working page does not mean a working pipeline. A static site can keep serving
-stale data, an API can return incomplete results, and a scheduled job can finish
-with only some sources succeeding. This project combines checks of the published
-application with evidence from the pipeline that feeds it.
+This project aims to mitigate "silent failures" where the system is failing but the user is not aware of said failure.
 
 When something fails, the monitor can ask Codex to investigate in a disposable
 checkout, validate a proposed patch in a fresh checkout, and email the result for
