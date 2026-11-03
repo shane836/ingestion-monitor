@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runLocalRepair } from './local-repair.mjs';
 
 const field = (object, path) => path.split('.').reduce((value, key) => value?.[key], object);
 const ageHours = (date, now) => (now - new Date(date)) / 3_600_000;
@@ -105,16 +106,6 @@ export async function checkProject(project, state = {}, overrides = {}) {
   return issues;
 }
 
-async function dispatchRepair(config, project, issues, deps) {
-  if (!config.repair?.repository || !deps.githubToken) throw new Error('Repair dispatch requires repair.repository and GITHUB_TOKEN');
-  const response = await deps.fetch(`https://api.github.com/repos/${config.repair.repository}/actions/workflows/repair-review.yml/dispatches`, {
-    method: 'POST', signal: AbortSignal.timeout(30_000),
-    headers: { Authorization: `Bearer ${deps.githubToken}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ref: config.repair.ref ?? 'main', inputs: { project: project.id, incident: JSON.stringify(issues).slice(0, 12_000) } }),
-  });
-  if (response.status !== 204) throw new Error(`Repair dispatch HTTP ${response.status}`);
-}
-
 export async function runCycle(config, state, overrides = {}) {
   const deps = { fetch: globalThis.fetch, now: () => new Date(), ...overrides };
   const results = [];
@@ -133,7 +124,14 @@ export async function runCycle(config, state, overrides = {}) {
       if (count < (config.maxRepairsPerDay ?? 3)) {
         try {
           if (deps.dispatch) await deps.dispatch(project, issues);
-          else await dispatchRepair(config, project, issues, deps);
+          else {
+            // Persist the attempt before starting a long-running local process.
+            // A restart must not spend another attempt on the same incident.
+            Object.assign(current, { dispatchedFingerprint: fingerprint, dispatchedAt: deps.now().toISOString(), dispatchDay: day, dispatchCount: count + 1 });
+            state[project.id] = current;
+            await deps.persist?.();
+            current.review = await runLocalRepair(project, issues, { codex: deps.codex });
+          }
           Object.assign(current, { dispatchedFingerprint: fingerprint, dispatchedAt: deps.now().toISOString(), dispatchDay: day, dispatchCount: count + 1, dispatchError: null });
         } catch (error) { current.dispatchError = error.message; }
       } else current.dispatchError = 'Daily repair limit reached';
@@ -160,7 +158,7 @@ async function main() {
   const config = validateConfig(JSON.parse(readFileSync(process.env.MONITOR_CONFIG ?? 'projects.json', 'utf8')));
   const path = process.env.MONITOR_STATE ?? 'state/incidents.json';
   const state = loadState(path);
-  const results = await runCycle(config, state, { githubToken: process.env.GITHUB_TOKEN });
+  const results = await runCycle(config, state, { githubToken: process.env.GITHUB_TOKEN, codex: process.env.CODEX_BIN, persist: () => saveState(path, state) });
   saveState(path, state);
   console.log(JSON.stringify(results, null, 2));
   if (results.some(result => result.issues.length || result.dispatchError)) process.exitCode = 1;

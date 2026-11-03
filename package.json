@@ -7,6 +7,11 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/service.mjs",
     "check": "node --env-file-if-exists=.env src/monitor.mjs",
+    "repair": "node --env-file-if-exists=.env src/local-repair.mjs",
+    "install:local": "node scripts/install-local.mjs",
+    "status": "node --env-file=.env src/control.mjs status",
+    "run:now": "node --env-file=.env src/control.mjs run",
+    "email:test": "node --env-file=.env src/control.mjs notify",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": { "playwright": "1.60.0" }

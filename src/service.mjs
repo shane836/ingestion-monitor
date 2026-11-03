@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateConfig, loadState, saveState, runCycle } from './monitor.mjs';
+import { emailSettings, notifyCycle } from './notify.mjs';
 
 function authorized(request, token) {
   if (!token) return false;
@@ -35,8 +36,10 @@ export function createService(config, options) {
     if (running) throw Object.assign(new Error('A check is already in progress'), { status: 409 });
     running = true;
     try {
-      const results = await runCycle(config, state, options);
+      const results = await runCycle(config, state, { ...options, persist });
       state._meta = { checkedAt: new Date().toISOString() };
+      persist();
+      await notifyCycle(results, state, options.email, { fetch: options.fetch });
       persist();
       serviceError = null;
       console.log(JSON.stringify({ event: 'monitor-cycle', results }));
@@ -65,6 +68,12 @@ export function createService(config, options) {
       }
       if (!authorized(request, options.apiToken)) return send(401, { error: 'Unauthorized' });
       if (request.method === 'GET' && path === '/status') return send(200, state);
+      if (request.method === 'POST' && path === '/notify') {
+        const results = config.projects.map(project => ({ project: project.id, ...state[project.id] }));
+        const notification = await notifyCycle(results, state, options.email, { fetch: options.fetch });
+        persist();
+        return send(notification?.error ? 502 : 200, { notification });
+      }
       if (request.method === 'POST' && path === '/run') return send(200, await run());
       return send(404, { error: 'Not found' });
     } catch (error) {
@@ -78,13 +87,13 @@ export function createService(config, options) {
 
 function main() {
   const config = JSON.parse(readFileSync(process.env.MONITOR_CONFIG ?? 'projects.json', 'utf8'));
-  const service = createService(config, { statePath: process.env.MONITOR_STATE ?? 'state/incidents.json', apiToken: process.env.MONITOR_API_TOKEN, tokens: process.env, githubToken: process.env.GITHUB_TOKEN });
+  const service = createService(config, { statePath: process.env.MONITOR_STATE ?? 'state/incidents.json', apiToken: process.env.MONITOR_API_TOKEN, tokens: process.env, githubToken: process.env.GITHUB_TOKEN, codex: process.env.CODEX_BIN, email: emailSettings() });
   const checkDue = () => {
     const previous = Date.parse(service.state._meta?.checkedAt ?? '');
     if (!Number.isFinite(previous) || Date.now() - previous >= 24 * 3_600_000) service.run().catch(error => console.error(JSON.stringify({ event: 'cycle-error', message: error.message })));
   };
   const timer = setInterval(checkDue, 60_000);
-  service.server.listen(Number(process.env.PORT ?? 8080), '0.0.0.0', () => { console.log('Ingestion monitor listening'); checkDue(); });
+  service.server.listen(Number(process.env.PORT ?? 8080), process.env.HOST ?? '127.0.0.1', () => { console.log('Ingestion monitor listening'); checkDue(); });
   const stop = () => { clearInterval(timer); service.server.close(); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);

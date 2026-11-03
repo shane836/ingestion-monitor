@@ -2,9 +2,7 @@
   "cooldownHours": 168,
   "maxRepairsPerDay": 1,
   "repair": {
-    "enabled": false,
-    "repository": "shane836/ingestion-monitor",
-    "ref": "main"
+    "enabled": true
   },
   "projects": [
     {
@@ -38,6 +36,7 @@
         "maxRunHours": 1
       },
       "repair": {
+        "postgres": true,
         "allowedPaths": [
           "app/",
           "lib/",

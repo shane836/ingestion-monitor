@@ -1,163 +1,157 @@
-# Ingestion Monitor
+# Data Pipeline Monitor
 
-A standalone Node service for SF Events and CRE Radar. Copy this directory into
-its own repository; it has no imports, database connections, or dependencies on
-either application's checkout. Node 22+ and Docker are supported.
+A local monitoring and repair-review system for **data aggregation services**:
+applications that collect outside data, process it on a schedule, and publish it
+through an API or website.
 
-It checks configured APIs, public pages, browser selectors, ingestion workflows,
-and signed-in-by-token ingestion heartbeats once per 24 hours. A successful HTTP
-200 alone does not prove an ingestion pipeline is healthy.
+A working page does not mean a working pipeline. A static site can keep serving
+stale data, an API can return incomplete results, and a scheduled job can finish
+with only some sources succeeding. This project combines checks of the published
+application with evidence from the pipeline that feeds it.
+
+When something fails, the monitor can ask Codex to investigate in a disposable
+checkout, validate a proposed patch in a fresh checkout, and email the result for
+human review. It never automatically commits, merges, or deploys a repair.
+
+SF Events and CRE Radar are the case studies. This repository presents the
+implementation and its tradeoffs as a portfolio project, rather than a packaged
+monitoring product.
+
+## Architecture
 
 ```mermaid
-flowchart LR
-  Apps[API and browser checks] --> Monitor[Daily monitor]
-  Actions[SF ingestion workflow] --> Monitor
-  CRE[CRE launchd heartbeat] --> Monitor
-  Monitor --> State[Persistent incident state]
-  Monitor --> Repair[GitHub repair workflow]
-  Repair --> Agent[Isolated Codex attempt]
-  Agent --> Verify[Fresh runner validates patch]
-  Verify --> Email[Resend email with review link]
-  Email --> Owner[Owner approves and commits]
+flowchart TD
+  Config[Project configuration] --> Monitor[Daily monitoring cycle on the Mac]
+  Web[API, content, and browser checks] --> Monitor
+  Workflow[GitHub ingestion status and freshness] --> Monitor
+  Pipeline[External pipeline reports per-source outcomes] --> Heartbeat[Authenticated localhost heartbeat]
+  Heartbeat --> State[Persistent incident state]
+  State --> Monitor
+  Monitor --> Health{Issues detected?}
+  Health -->|No| Recovery[Record health and rearm]
+  Recovery --> State
+  Health -->|Yes| Incident[Record incident and failure evidence]
+  Incident --> State
+  Incident --> Gate{Repair enabled and within limits?}
+  Gate -->|Yes| Agent[Exact-commit checkout and local Codex attempt]
+  Agent --> Validate[Fresh checkout validates the proposed patch]
+  Validate --> Review[Save diagnosis, patch, and validation results]
+  Review --> Email[Email changed incidents, reviews, and recoveries]
+  Gate -->|No| Email
+  Recovery --> Email
+  Email --> Owner[Human reviews and decides what to apply]
 ```
 
-## Current readiness
+The Mac runs the scheduler, checks, repair orchestration, and email transport.
+Codex uses OpenAI's hosted model through the existing CLI login. GitHub hosts the
+code and supplies workflow evidence; no GitHub Actions runner or repository
+secrets are required for this monitor.
 
-The service and container have been tested locally. Both public sites have been
-checked. Repair dispatch starts disabled; no monitor has been deployed, and no
-agent or review email has been sent. The private source repository is
-https://github.com/shane836/ingestion-monitor; publishing code does not activate
-the service or its repair workflow.
-CRE's heartbeat receiver is implemented, but its launchd wrapper is not yet wired
-to it. The example configuration intentionally reports that missing heartbeat.
+## Two services, one monitoring model
 
-The activation checklist is [OPEN-ITEMS.md](OPEN-ITEMS.md).
+| Case study | Published surface | Pipeline evidence | Failure the monitor can catch |
+|---|---|---|---|
+| SF Events | Events API and browser feed | GitHub Actions status, duration, and freshness | The site works while individual ingestion jobs fail |
+| CRE Radar | Static site and browser page | Authenticated per-source heartbeat | Published content remains available after a pipeline or delivery failure |
 
-## Run
+The monitor imports neither application's code and opens no production database.
+[projects.json](projects.json) defines each integration's checks, freshness
+thresholds, repository, allowed repair paths, and validation commands. Other
+scheduled feeds, directories, and research dashboards can use the same pattern
+when they expose comparable health signals.
+
+## Design decisions
+
+- **Check behavior as well as uptime.** HTTP assertions inspect expected content
+  and record fields. Playwright checks visible selectors and JavaScript errors.
+  Workflow age and heartbeats provide execution evidence. Successful zero-record
+  source results are valid; partial failures remain visible.
+- **Remember incidents.** Failures are fingerprinted and persisted. The current
+  configuration allows one repair attempt per project per UTC day and a seven-day
+  cooldown for unchanged incidents. Recovery rearms future incidents. Attempt
+  state is saved before Codex starts, preventing duplicate spending after restart.
+- **Bring evidence into the sandbox.** The host retrieves GitHub failure logs and
+  supplies bounded error excerpts. Lines containing obvious credentials or SQL
+  are excluded, and URL query strings are stripped. Upstream text remains
+  untrusted data. Retrieval errors are recorded.
+- **Separate proposal from validation.** Codex works at an exact commit in a
+  disposable checkout. Only its structured diagnosis and diff cross into a fresh
+  checkout. The validator checks the declared base, permitted paths, and patch
+  format before applying and testing it. An empty patch means diagnosis only.
+- **Keep credentials local.** Ignored `.env` files hold monitor and email
+  credentials. Repair children receive HOME, PATH, and TMPDIR rather than the
+  monitor's tokens or production database variables. Codex uses its workspace-write
+  sandbox. Dependency installation and validation run as the local user; these
+  checkouts are not a machine isolation boundary.
+- **Make review explicit.** Local artifacts retain successful, failed, and
+  diagnosis-only attempts. Resend emails one private recipient when incident or
+  review state changes, and after recovery. Repeated state is deduplicated. Email
+  errors persist and can retry without another model attempt.
+
+## What has been verified
+
+The native macOS service is active, with automatic local repair enabled. Testing
+on November 3, 2026 established:
+
+- **16 passing regression tests** covering checks, heartbeat authentication,
+  incident handling, patch restrictions, timeouts, evidence filtering, and email.
+- **Live monitor-to-review execution** for both case studies. Both returned
+  diagnosis-only results. SF Events' HTTP 405 failures and identity conflicts
+  required human review; no application code repair was justified.
+- **Controlled patch validation** in a fresh checkout, including disposable
+  PostgreSQL startup and cleanup. The patch was a fixture, not a claimed model fix.
+- **Restart persistence and repeat protection:** saved reviews survived restart;
+  repeated incidents did not launch duplicate automatic attempts.
+- **Heartbeat transport:** CRE Radar's existing sender received empty HTTP 204
+  while reporting 20 recorded source outcomes as a partial run. This replay did
+  not run ingestion or prove the next scheduled delivery.
+- **Inbox delivery:** a uniquely identified Resend test message was found in the
+  connected recipient Outlook mailbox. Repeated notification requests did not
+  send duplicates.
+
+## Explore the code
+
+| File | Responsibility |
+|---|---|
+| [src/monitor.mjs](src/monitor.mjs) | Health checks, incident state, and repair limits |
+| [src/service.mjs](src/service.mjs) | Local HTTP service, heartbeat receiver, and scheduler |
+| [src/local-repair.mjs](src/local-repair.mjs) | Evidence collection, Codex execution, and fresh-checkout validation |
+| [src/repair.mjs](src/repair.mjs) | Patch scope and base-SHA checks |
+| [src/notify.mjs](src/notify.mjs) | Email change detection, transport, and receipts |
+| [repair-prompt.md](repair-prompt.md) | Agent instructions and evidence-handling boundaries |
+| [test/](test/) | Regression tests using controlled inputs |
+
+With Node 22+:
 
 ```sh
 npm ci
-cp .env.example .env
-# Populate the ignored .env locally; never paste credentials into chat.
-npx playwright install chromium
 npm test
-npm run check       # one cycle; nonzero means an issue was found
-npm start           # HTTP service; first cycle, then once every 24 hours
 ```
 
-For an independent host:
+Tests do not contact the live applications or call a model. Live operations use
+the configured case studies and can consume Codex account usage when repair is
+enabled. [Maintainer notes](OPEN-ITEMS.md) cover local configuration, startup,
+manual checks, endpoints, and remaining acceptance work.
 
-```sh
-docker compose up --build -d
-docker compose logs -f monitor
-```
+## Tradeoffs and limits
 
-The image runs as `pwuser`. The named volume preserves incident state. Compose
-binds port 8080 to localhost. Put an HTTPS reverse proxy in front of it before
-accepting heartbeats from other machines. Use one service replica: its JSON state
-is atomic but is not a distributed database. Do not host the only monitor on the
-same sleeping Mac whose launchd job it is meant to watch. A second project is
-another `projects.json` entry, not another service or database.
+Checks run once every 24 hours while the Mac is awake. Sleep or shutdown delays
+them; an overdue cycle runs after resumption. Heartbeat freshness is 36 hours.
+There is one service instance and no independent uptime watchdog. This setup
+accepts gaps in exchange for avoiding a separate always-on host.
 
-The scheduler inspects its clock every minute, but contacts the applications only
-once per 24 hours. Authenticated manual runs remain available for diagnosis.
+Assertions detect selected symptoms; they do not reconcile every record or prove
+source coverage. Heartbeats depend on honest producer reporting. The next
+scheduled CRE Radar heartbeat remains to be observed, and a seven-day cooldown
+expiry has not been exercised in a live test.
 
-## Configuration and endpoints
+Codex execution is limited to 15 minutes per attempt; installation and validation
+also have time limits. Failed local attempts consume the same incident cooldown.
+Manual repairs bypass scheduler limits. Artifacts and disposable checkouts remain
+on disk until removed. Costs are local compute, existing Codex account usage, and
+Resend usage. SF patch validation uses Docker for a disposable PostgreSQL database.
 
-`projects.json` holds project IDs, repositories, branches, HTTP assertions,
-browser selectors and freshness thresholds. Empty calendars can be legitimate:
-set `minimumItems: 0` when empty results are valid. SF's broad upcoming-events
-feed requires at least one event. CRE has a static page, so it needs a pipeline
-heartbeat rather than an invented API endpoint.
-
-| Endpoint | Purpose | Authorization |
-|---|---|---|
-| `GET /health` | Monitor process health | Public; returns only `ok` |
-| `GET /status` | Last checks, incidents and dispatch failures | `MONITOR_API_TOKEN` |
-| `POST /run` | Run one cycle; rejects overlapping cycles | `MONITOR_API_TOKEN` |
-| `POST /heartbeats/cre-radar` | Store a completed/partial/failed pipeline result | `CRE_HEARTBEAT_TOKEN` |
-
-Send tokens as `Authorization: Bearer …` headers. The admin token cannot submit
-project heartbeats. Heartbeats are stamped by the receiver, not by a client clock.
-Requests are bounded to 64 KiB. Example body, with no secret in it:
-
-```json
-{
-  "status": "partial",
-  "sources": [
-    { "source": "example-calendar", "status": "completed" },
-    { "source": "other-calendar", "status": "failed" }
-  ]
-}
-```
-
-A healthy source can return zero events. Report actual runner outcomes; never
-translate "the process exited zero" into "every source succeeded" if the runner
-can contain partial failures. Heartbeat freshness defaults to 36 hours, allowing
-the daily scheduler some delay. A future CRE integration should post its existing
-per-source outcomes after `cre-radar run`, preserve the pipeline exit code, and
-surface transport failures in `cron.log`. It must not install a second scheduler
-or run another ingestion against CRE's SQLite database. No changes to CRE are
-needed for its public-site checks.
-
-`/health` checks the service, not the monitored applications. Configure the
-included daily GitHub watchdog with `MONITOR_HEALTH_URL` and enable GitHub failure
-notifications to detect the monitor itself going offline. This is also where an
-optional free Checkly uptime monitor could be used later.
-
-## Enable repair and review emails
-
-1. **Completed:** source is published in the private `shane836/ingestion-monitor`
-   repository. No automatic commit is part of this service.
-2. Add GitHub secrets `OPENAI_API_KEY`, `RESEND_API_KEY`, and, for private target
-   repositories, `MONITOR_GITHUB_TOKEN`. Add repository variables
-   `MONITOR_EMAIL_TO` and `MONITOR_EMAIL_FROM`. The latter must be a verified
-   Resend sender. Keep this destination separate from all newsletter audiences.
-3. Give the service's `GITHUB_TOKEN` **Actions write** on the monitor repository
-   and **Actions read / Contents read** on the target repositories. It does not
-   need Contents write. Give `MONITOR_GITHUB_TOKEN` only Contents read on private
-   target repositories. The default workflow token can read public targets.
-4. Set repository variable `MONITOR_REPAIR_ENABLED=true`, set
-   `repair.repository` in `projects.json` to the real monitor repository, then
-   set `repair.enabled=true`. Configure a dedicated OpenAI project spend limit
-   appropriate to your budget before enabling it.
-5. Dispatch a synthetic incident manually and review the resulting artifact and
-   test email. Enable CRE heartbeats after its wrapper reports actual outcomes.
-
-The service dispatches `repair-review.yml` with a configured project ID and
-incident evidence. Workflow metadata resolves the repository's current branch to
-an exact SHA. Each attempt has a 15-minute job limit. There is at most one repair
-dispatch per project per UTC day; unchanged incident keys have a seven-day
-cooldown. A healthy cycle rearms future incidents. Dispatch failures remain
-visible and are retried next cycle. The dispatch receipt does not prove the agent
-or email succeeded: review the linked GitHub run and its notifications.
-
-The agent runs without production database, email, deployment or repository write
-credentials. Its final structured output contains a diagnosis and unified diff.
-A fresh runner enforces the allowed file paths, refuses stale bases and symlinks,
-and independently applies and checks the patch. SF persistence tests get an empty
-localhost PostgreSQL database. CRE's tests run in their own checkout with `uv`.
-Workflows, credentials, dependencies and database migrations are outside automated
-repair scope. An ambiguous merge or access block gets a diagnosis rather than an
-automatic data change.
-
-The owner email links to `diagnosis.txt`, `repair.patch` and validation logs in a
-14-day artifact. Failed attempts also trigger an email. Empty patches mean
-diagnosis only, even when the validator succeeds. Approval is manual: download
-and review the patch, check that the base is still current, rerun relevant tests,
-and explicitly commit it. Nothing auto-commits, pushes, merges or deploys.
-
-## Cost and limitations
-
-No Checkly subscription is required. Costs are the host you choose, GitHub runner
-usage, agent API calls on incidents, and existing Resend usage. Two projects mean
-roughly 62 browser checks a month at this initial cadence. Hosted scheduling is
-daily, so an outage can remain undetected until the next cycle. This first version
-groups incidents by failed check/job; it does not compare every individual event
-or prove that all expected events were extracted. Heartbeats need honest
-per-source reporting to detect silent ingestion failures.
+## How this was built
 
 Built with OpenAI Codex, directed and reviewed by the project owner.
-
-References: [Codex GitHub Action](https://learn.chatgpt.com/docs/github-action),
-[Checkly pricing](https://www.checklyhq.com/pricing/).
+CLI integration follows [OpenAI's non-interactive Codex documentation](https://learn.chatgpt.com/docs/non-interactive-mode).

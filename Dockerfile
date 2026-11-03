@@ -5,6 +5,7 @@ RUN npm ci --omit=dev --ignore-scripts && mkdir /app/state && chown -R pwuser:pw
 COPY --chown=pwuser:pwuser src ./src
 COPY --chown=pwuser:pwuser projects.json ./projects.json
 USER pwuser
+ENV HOST=0.0.0.0
 EXPOSE 8080
 VOLUME ["/app/state"]
 CMD ["node", "src/service.mjs"]
